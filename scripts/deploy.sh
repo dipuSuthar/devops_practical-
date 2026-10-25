@@ -12,10 +12,15 @@ other() { if [ "$1" = "blue" ]; then echo green; else echo blue; fi; }
 CUR=""; BV=""; GV=""
 read_state() {
   CUR=$(terraform output -raw active_color 2>/dev/null || true)
-  if [ -n "$CUR" ]; then
-    BV=$(terraform output -raw blue_version 2>/dev/null || true)
-    GV=$(terraform output -raw green_version 2>/dev/null || true)
-  fi
+  # With an empty state Terraform prints a "No outputs found" warning instead of a value.
+  # Only accept a real colour; anything else means "first deployment".
+  case "$CUR" in
+    blue|green)
+      BV=$(terraform output -raw blue_version 2>/dev/null || true)
+      GV=$(terraform output -raw green_version 2>/dev/null || true)
+      ;;
+    *) CUR="" ;;
+  esac
 }
 
 # args: active_color blue_version green_version idle_full_capacity
