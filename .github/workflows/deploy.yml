@@ -1,5 +1,6 @@
 name: Deploy (Blue/Green)
 
+
 on:
   pull_request:
     paths: ["terraform/**", "app/**", "scripts/**", ".github/**"]
