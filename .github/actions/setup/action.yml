@@ -1,0 +1,36 @@
+name: Setup AWS and Terraform
+description: Assume the AWS role via OIDC, install Terraform, run terraform init for one environment
+inputs:
+  role-arn:
+    required: true
+    description: IAM role to assume
+  region:
+    required: true
+    description: AWS region
+  state-bucket:
+    required: true
+    description: S3 bucket for Terraform state
+  environment:
+    required: true
+    description: Environment folder under terraform/envs (dev or prod)
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.region }}
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.10.5
+        terraform_wrapper: false
+    - name: Terraform init
+      shell: bash
+      working-directory: terraform/envs/${{ inputs.environment }}
+      run: |
+        terraform init -input=false \
+          -backend-config="bucket=${{ inputs.state-bucket }}" \
+          -backend-config="key=${{ inputs.environment }}/terraform.tfstate" \
+          -backend-config="region=${{ inputs.region }}" \
+          -backend-config="encrypt=true" \
+          -backend-config="use_lockfile=true"

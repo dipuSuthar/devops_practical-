@@ -1,0 +1,12 @@
+# Local MySQL for testing the app on your laptop (not used in AWS)
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: localpass
+      MYSQL_DATABASE: appdb
+    ports: ["3307:3306"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-plocalpass"]
+      interval: 5s
+      retries: 20

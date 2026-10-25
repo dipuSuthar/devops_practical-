@@ -1,0 +1,128 @@
+name: Deploy (Blue/Green)
+
+on:
+  pull_request:
+    paths: ["terraform/**", "app/**", "scripts/**", ".github/**"]
+  push:
+    branches: [main]
+    paths: ["terraform/**", "app/**", "scripts/**", ".github/**"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do"
+        type: choice
+        options: [deploy, rollback, destroy]
+        default: deploy
+      environment:
+        description: "Environment (push to main always deploys dev)"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_ENV: ${{ inputs.environment || 'dev' }}
+  TF_VAR_region: ${{ vars.AWS_REGION }}
+  TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
+  TF_VAR_releases_bucket: ${{ vars.RELEASES_BUCKET }}
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive -diff
+      - name: Terraform validate (every environment)
+        run: |
+          for env in dev prod; do
+            echo "== $env =="
+            (cd "terraform/envs/$env" && terraform init -backend=false -input=false && terraform validate)
+          done
+      - name: Script and app syntax
+        run: |
+          bash -n scripts/deploy.sh
+          node --check app/server.js
+
+  plan:
+    name: Plan (PR)
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          environment: dev
+      - run: bash scripts/deploy.sh plan
+
+  deploy:
+    name: Blue/green deploy
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy')
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          environment: ${{ inputs.environment || 'dev' }}
+      - name: Package and upload release
+        run: |
+          echo "VERSION=${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          VERSION="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}"
+          (cd app && zip -qr ../app.zip . -x "node_modules/*")
+          aws s3 cp app.zip "s3://${TF_VAR_releases_bucket}/releases/app-${VERSION}.zip"
+      - name: Deploy
+        run: bash scripts/deploy.sh deploy
+
+  rollback:
+    name: Rollback
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'rollback'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          environment: ${{ inputs.environment }}
+      - run: bash scripts/deploy.sh rollback
+
+  destroy:
+    name: Destroy everything
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          environment: ${{ inputs.environment }}
+      - run: bash scripts/deploy.sh destroy
